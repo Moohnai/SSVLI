@@ -65,14 +65,20 @@ class SmoothedValue(object):
 
     @property
     def global_avg(self):
+        if self.count == 0:
+            return 0.0
         return self.total / self.count
 
     @property
     def max(self):
+        if len(self.deque) == 0:
+            return 0.0
         return max(self.deque)
 
     @property
     def value(self):
+        if len(self.deque) == 0:
+            return 0.0
         return self.deque[-1]
 
     def __str__(self):
@@ -362,6 +368,19 @@ class NativeScalerWithGradNormCount:
             self._scaler.update()
         else:
             norm = None
+        return norm
+    
+    def update(self, optimizer, clip_grad=None, parameters=None,):
+        if clip_grad is not None:
+            assert parameters is not None
+            self._scaler.unscale_(optimizer)  # unscale the gradients of optimizer's assigned params in-place
+            norm = torch.nn.utils.clip_grad_norm_(parameters, clip_grad)
+        else:
+            self._scaler.unscale_(optimizer)
+            norm = get_grad_norm_(parameters)
+        self._scaler.step(optimizer)
+        self._scaler.update()
+        
         return norm
 
     def state_dict(self):

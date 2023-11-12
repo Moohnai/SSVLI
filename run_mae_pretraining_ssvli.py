@@ -10,10 +10,11 @@ from pathlib import Path
 from timm.models import create_model
 from optim_factory import create_optimizer
 from dataset_ssvli import build_pretraining_dataset_ssvli
-from engine_for_pretraining import train_one_epoch_ssvli
+from engine_for_pretraining_ssvli import train_one_epoch_ssvli
 from utils import NativeScalerWithGradNormCount as NativeScaler
 import utils
 import modeling_pretrain
+import modeling_pretrain_ssvli
 import wandb
 import random
 
@@ -21,12 +22,12 @@ import random
 
 def get_args():
     parser = argparse.ArgumentParser('VideoMAE pre-training script', add_help=False)
-    parser.add_argument('--batch_size', default=12, type=int)
+    parser.add_argument('--batch_size', default=24, type=int)
     parser.add_argument('--epochs', default=800 , type=int)
     parser.add_argument('--save_ckpt_freq', default=50, type=int)
 
     # Model parameters
-    parser.add_argument('--model', default='pretrain_videomae_base_patch16_224', type=str, metavar='MODEL',
+    parser.add_argument('--model', default='pretrain_videomae_base_patch16_224_ssvli', type=str, metavar='MODEL',
                         help='Name of model to train')
 
     parser.add_argument('--decoder_depth', default=4, type=int,
@@ -63,6 +64,7 @@ def get_args():
     parser.add_argument('--weight_decay_end', type=float, default=None, help="""Final value of the
         weight decay. We use a cosine schedule for WD. 
         (Set the same value with args.weight_decay to keep weight decay no change)""")
+    parser.add_argument('--accum_freq', type=int, default=1, help='gradient accumulation frequency (default: 1)')
 
     parser.add_argument('--lr', type=float, default=1.5e-4, metavar='LR',
                         help='learning rate (default: 1.5e-4)')
@@ -83,16 +85,16 @@ def get_args():
                         help='Training interpolation (random, bilinear, bicubic default: "bicubic")')
 
     # Dataset parameters
-    parser.add_argument('--data_path', default='/home/mona/VideoMAE/dataset/Epic_kitchen/annotation/verb/15class/train.csv', type=str,
+    parser.add_argument('--data_path', default='/home/mona/SSVLI/dataset/epic_kitchens/annotation/noun/train.csv', type=str,
                         help='dataset path')
     parser.add_argument('--imagenet_default_mean_and_std', default=True, action='store_true')
     parser.add_argument('--num_frames', type=int, default= 16)
     parser.add_argument('--sampling_rate', type=int, default= 2)
-    parser.add_argument('--output_dir', default='/home/mona/VideoMAE/results/pretrain_videoMAE_Epic_Kitchens_15classes',
+    parser.add_argument('--output_dir', default='/home/mona/VideoMAE/results/pretrain_ssvli_epic_Kitchens_with_noun',
                         help='path where to save, empty for no saving')
-    parser.add_argument('--log_dir', default='/home/mona/VideoMAE/results/pretrain_videoMAE_Epic_Kitchens_15classes',
+    parser.add_argument('--log_dir', default='/home/mona/VideoMAE/results/pretrain_ssvli_epic_Kitchens_with_noun',
                         help='path where to tensorboard log')
-    parser.add_argument('--device', default='cuda',
+    parser.add_argument('--device', default='cuda:1',
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
     parser.add_argument('--resume', default='', help='resume from checkpoint')
@@ -102,7 +104,7 @@ def get_args():
 
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
-    parser.add_argument('--num_workers', default=4, type=int)
+    parser.add_argument('--num_workers', default=8, type=int)
     parser.add_argument('--pin_mem', action='store_true',
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
     parser.add_argument('--no_pin_mem', action='store_false', dest='pin_mem',
@@ -214,6 +216,10 @@ def main(args):
 
     total_batch_size = args.batch_size * utils.get_world_size()
 
+    # in case of gradient accumulation, scale learning rate and weight decay
+    if args.accum_freq > 1:
+        args.lr = args.lr / args.accum_freq
+
     args.lr = args.lr * total_batch_size / 256
     args.min_lr = args.min_lr * total_batch_size / 256
     args.warmup_lr = args.warmup_lr * total_batch_size / 256
@@ -246,13 +252,13 @@ def main(args):
     torch.cuda.empty_cache()
     print(f"Start training for {args.epochs} epochs")
 
-    # initialize wandb
-    wandb.init(
-        project="Epic-Kitchens",
-        group="pretrained",
-        name="800_epochs_VideoMAE_scratch_15classes",
-        config=args,
-        )
+    # # initialize wandb
+    # wandb.init(
+    #     project="epic-Kitchens",
+    #     group="pretrained",
+    #     name="800_epochs_SSVLI_scratch_with_noun",
+    #     config=args,
+    #     )
 
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
@@ -260,7 +266,7 @@ def main(args):
             data_loader_train.sampler.set_epoch(epoch)
         if log_writer is not None:
             log_writer.set_step(epoch * num_training_steps_per_epoch)
-        train_stats = train_one_epoch(
+        train_stats = train_one_epoch_ssvli(
             model, data_loader_train,
             optimizer, device, epoch, loss_scaler,
             args.clip_grad, log_writer=log_writer,
@@ -269,13 +275,14 @@ def main(args):
             wd_schedule_values=wd_schedule_values,
             patch_size=patch_size[0],
             normlize_target=args.normlize_target,
+            accum_freq=args.accum_freq,
         )
 
-        # wandb log
-        wandb_dict = {}
-        for key, value in train_stats.items():
-            wandb_dict["train_epoch_"+key] = value
-        wandb.log(wandb_dict, step=epoch)
+        # # wandb log
+        # wandb_dict = {}
+        # for key, value in train_stats.items():
+        #     wandb_dict["train_epoch_"+key] = value
+        # wandb.log(wandb_dict, step=epoch)
 
         if args.output_dir:
             if (epoch + 1) % args.save_ckpt_freq == 0 or epoch + 1 == args.epochs:

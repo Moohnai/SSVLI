@@ -89,6 +89,29 @@ def build_pretraining_dataset(args):
 
 
 
+
+
+
+def build_pretraining_dataset_ssvli(args):
+    transform = DataAugmentationForVideoMAE(args)
+    dataset = VideoMAE(
+        root=None,
+        setting=args.data_path,
+        video_ext='mp4',
+        is_color=True,
+        modality='rgb',
+        new_length=args.num_frames,
+        new_step=args.sampling_rate,
+        transform=transform,
+        temporal_jitter=False,
+        video_loader=True,
+        use_decord=True,
+        lazy_init=False)
+    # dataset = build_dataset(is_train=True, test_mode=False, args=args)
+    print("Data Aug = %s" % str(transform))
+    return dataset
+
+ 
 def build_pretraining_dataset_BB(args):
     transform = DataAugmentationForVideoMAE_BB(args)
     dataset = VideoMAE_BB_no_global_union(
@@ -279,6 +302,100 @@ def build_dataset(is_train, test_mode, args):
     print("Number of the class = %d" % args.nb_classes)
 
     return dataset, nb_classes
+
+
+
+
+
+
+def build_dataset_ssvli(is_train, test_mode, args): 
+    if args.data_set == 'SSV2':
+        mode = None
+        anno_path = None
+        if is_train is True:
+            mode = 'train'
+            anno_path = os.path.join(args.data_path, 'train.csv')
+            text_path = os.path.join(args.data_path, 'EPIC_100_train_noun_text.pt')
+            # anno_path = args.data_path
+        elif test_mode is True:
+            mode = 'test'
+            anno_path = os.path.join(args.data_path, 'test.csv') 
+            text_path = os.path.join(args.data_path, 'EPIC_100_test_noun_text.pt')
+            
+        else:  
+            mode = 'validation'
+            anno_path = os.path.join(args.data_path, 'val.csv') 
+            text_path = os.path.join(args.data_path, 'EPIC_100_val_noun_text.pt')
+            # anno_path = args.eval_data_path 
+
+        dataset = SSVideoClsDataset(
+            anno_path=anno_path,
+            data_path='/',
+            mode=mode,
+            clip_len=1,
+            num_segment=args.num_frames,
+            test_num_segment=args.test_num_segment,
+            test_num_crop=args.test_num_crop,
+            num_crop=1 if not test_mode else 3,
+            keep_aspect_ratio=True,
+            crop_size=args.input_size,
+            short_side_size=args.short_side_size,
+            new_height=256,
+            new_width=320,
+            args=args), torch.load(text_path)
+        nb_classes = args.nb_classes
+
+    
+    elif args.data_set == 'Epic-Kitchens':
+        mode = None
+        anno_path = None
+        if is_train is True:
+            mode = 'train'
+            anno_path = os.path.join(args.data_path, 'train.csv')
+            text_path = os.path.join(args.data_path, 'EPIC_100_train_noun_text.pt')
+            # anno_path = args.data_path
+        elif test_mode is True:
+            mode = 'test'
+            anno_path = os.path.join(args.data_path, 'val.csv') 
+            text_path = os.path.join(args.data_path, 'EPIC_100_val_noun_text.pt')
+            
+        else:  
+            mode = 'validation'
+            anno_path = os.path.join(args.data_path, 'val.csv') 
+            text_path = os.path.join(args.data_path, 'EPIC_100_val_noun_text.pt')
+            # anno_path = args.eval_data_path 
+
+
+        dataset = EpicVideoClsDataset(
+            classtype=args.classtype,
+            anno_path=anno_path,
+            data_path='/',
+            mode=mode,
+            clip_len=args.num_frames,
+            num_segment=1,
+            test_num_segment=args.test_num_segment,
+            test_num_crop=args.test_num_crop,
+            num_crop=1 if not test_mode else 3,
+            keep_aspect_ratio=True,
+            crop_size=args.input_size,
+            short_side_size=args.short_side_size,
+            new_height=256,
+            new_width=320,
+            args=args,
+            ), torch.load(text_path)
+        nb_classes = args.nb_classes        
+    else:
+        raise NotImplementedError()
+    assert nb_classes == args.nb_classes
+    print("Number of the class = %d" % args.nb_classes)
+
+    return dataset, nb_classes
+
+
+
+
+
+
 
 
 def build_dataset_BB_focused(is_train, test_mode, args):
