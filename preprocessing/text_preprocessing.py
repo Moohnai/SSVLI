@@ -52,8 +52,11 @@ if __name__ == "__main__":
     df_val = pd.read_csv(csv_action_path_val, header=None, delimiter=' ')
 
     #read only the second column from df_train
-    encoded_text_train_action = [text_encoding(text) for text in df_train[1]]
-    encoded_text_val_action = [text_encoding(text) for text in df_val[1]]
+    #replace the "_" with " " in the text
+    df_train[1] = df_train[1]
+
+    encoded_text_train_action = [text_encoding(text) for text in df_train[1].str.replace("_", " ")]
+    encoded_text_val_action = [text_encoding(text) for text in df_val[1].str.replace("_", " ")]
 
     torch.save(encoded_text_train_action, "../../home/mona/SSVLI/dataset/epic_kitchens/EPIC_100_train_action_text.pt")
     torch.save(encoded_text_val_action, "../../home/mona/SSVLI/dataset/epic_kitchens/EPIC_100_val_action_text.pt")

@@ -6,6 +6,8 @@ import torch.nn.functional as F
 from timm.models.layers import drop_path, to_2tuple, trunc_normal_
 from timm.models.registry import register_model
 
+from flash_attn.modules.mha import MHA as FlashMHA
+
 
 def _cfg(url='', **kwargs):
     return {
@@ -195,12 +197,15 @@ class Block(nn.Module):
 
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., init_values=None, act_layer=nn.GELU, norm_layer=nn.LayerNorm,
-                 attn_head_dim=None):
+                 attn_head_dim=None, use_flash_attn=True):
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.attn = Attention(
-            dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale,
-            attn_drop=attn_drop, proj_drop=drop, attn_head_dim=attn_head_dim)
+        if not use_flash_attn:
+            self.attn = Attention(
+                dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale,
+                attn_drop=attn_drop, proj_drop=drop, attn_head_dim=attn_head_dim)
+        else:
+            self.attn = FlashMHA(dim, num_heads, cross_attn=False, qkv_proj_bias=qkv_bias, dropout=attn_drop, use_flash_attn=True)
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)

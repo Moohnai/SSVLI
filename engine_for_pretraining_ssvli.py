@@ -3,6 +3,7 @@ import sys
 from typing import Iterable
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import utils
 from einops import rearrange
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
@@ -12,14 +13,14 @@ import os
 import textwrap
 import cv2
 import numpy as np
-from loss_ssvli import SSVLI_Loss, SSVLI_SigLipLoss
+from loss_ssvli import SSVLI_Loss, SSVLI_SigLipLoss, Feature_Reconstruction_Loss
 
 
 def train_one_epoch_ssvli(model: torch.nn.Module, data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0, patch_size: int = 16, 
                     normlize_target: bool = True, log_writer=None, lr_scheduler=None, start_steps=None,
-                    lr_schedule_values=None, wd_schedule_values=None, loss_weight= None, lambda_1=0, lambda_2=1, ssvli_iter=100,
-                    accum_freq=1):
+                    lr_schedule_values=None, wd_schedule_values=None, loss_weight= None, lambda_1=0, lambda_2=1, lambda_3=0, ssvli_iter=10,
+                    accum_freq=1, teacher_model=None):
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -28,7 +29,8 @@ def train_one_epoch_ssvli(model: torch.nn.Module, data_loader: Iterable, optimiz
     print_freq = 10
 
     loss_func = nn.MSELoss(reduction='none')
-    loss_func_ssvli = SSVLI_Loss(stu_tau=0.1,tea_tau=0.04,loss_weight=0.5)
+    loss_func_ssvli = SSVLI_Loss(stu_tau=0.1,tea_tau=0.04,loss_weight=0.5, local_loss=False)
+    loss_func_feature_reconstruction = Feature_Reconstruction_Loss()
     # loss_func_ssvli = SSVLI_SigLipLoss()
 
     if accum_freq == 1:
@@ -42,7 +44,17 @@ def train_one_epoch_ssvli(model: torch.nn.Module, data_loader: Iterable, optimiz
                     if wd_schedule_values is not None and param_group["weight_decay"] > 0:
                         param_group["weight_decay"] = wd_schedule_values[it]
 
-            videos, video_texts, motion_patch_yabs, bboxs, bool_masked_pos = batch
+            videos, video_texts, motion_patch_yabs, bboxs, bool_masked_pos, target = batch
+            # ###
+            # # remvoe duplicates based on target
+            # _, unique_idx = np.unique(target.numpy(), return_index=True)
+            # videos = videos[unique_idx]
+            # video_texts = video_texts[unique_idx]
+            # motion_patch_yabs = motion_patch_yabs[unique_idx]
+            # bboxs = bboxs[unique_idx]
+            # bool_masked_pos = bool_masked_pos[unique_idx]
+            # target = target[unique_idx]
+            # ###
             videos = videos.to(device, non_blocking=True)
             bool_masked_pos = bool_masked_pos.to(device, non_blocking=True).flatten(1).to(torch.bool)
 
@@ -102,7 +114,13 @@ def train_one_epoch_ssvli(model: torch.nn.Module, data_loader: Iterable, optimiz
             with torch.cuda.amp.autocast():
                 # videos = torch.zeros_like(videos)
                 # videos[:, :, 2:4, 0*16:1*16, 0*16:1*16] = 1
-                outputs, embedded_patches = model(videos, bool_masked_pos)
+                # model forward
+                outputs, embedded_patches, mapped_embedded_patches, pred_features, _, mapped_masked_pred_features, logit_scale = model(videos, bool_masked_pos)
+                # teacher model forward
+                with torch.no_grad():
+                    _, _, _, _, mapped_masked_embedded_patches, _, _ = teacher_model(videos, bool_masked_pos)
+                    mapped_masked_embedded_patches = F.layer_norm(mapped_masked_embedded_patches, (mapped_masked_embedded_patches.size(-1),))  # normalize over feature-dim
+
                 loss = lambda_1 * loss_func(input=outputs, target=labels) 
                 ssvli_loss = 0
                 # repeat the motion_patch_yabs for 8 times
@@ -111,6 +129,7 @@ def train_one_epoch_ssvli(model: torch.nn.Module, data_loader: Iterable, optimiz
                 for i in range (0, ssvli_iter):
                     # find one element indexes in motion_patch_yabs
                     random_index = []
+                    vid_embed = []
                     x, y = torch.where(motion_patch_yabs==1)
                     for j in range(B):
                         x_loc = torch.where(x==j)[0].numpy()
@@ -125,26 +144,49 @@ def train_one_epoch_ssvli(model: torch.nn.Module, data_loader: Iterable, optimiz
                     random_index_patch = torch.tensor(random_index)
 
                     # get the random index for each video
-                    video_embed = embedded_patches[random_index_patch[:,0], random_index_patch[:,1], :]
+                    video_embed = mapped_embedded_patches[random_index_patch[:,0], random_index_patch[:,1], :] # for patch-wise
+                    # video_embed = embedded_patches.mean(dim=1) # for average patch
+
+                    ############################ inside bbox average
+                    # # randomly select one element from the list
+                    #     if len(x_loc) > 0:
+                    #         vid_embed.append(mapped_embedded_patch[j, y[x_loc], :].mean(dim=0))
+                    #     else:
+                    #         vid_embed.append(mapped_embedded_patch[j, np.array(list(range(1536))), :].mean(dim=0))
+
+                    # # get the random index for each video
+                    # video_embed = torch.stack(vid_embed, dim=0)
+                    ############################
+
+
                     ssvli_input_dict = {'video_embed': video_embed, 'text_embed': video_texts.squeeze(1).to(device), 
-                                        'motion_patch_yabs': motion_patch_yabs,
+                                        'motion_patch_yabs': motion_patch_yabs, 'logit_scale': logit_scale,
                                         'bbox': bboxs, 'bool_masked_pos': bool_masked_pos}
-                    ssvli_loss = ssvli_loss + lambda_2 * loss_func_ssvli(ssvli_input_dict)['loss']
-                    ssvli_acc_list.append(loss_func_ssvli(ssvli_input_dict)['clip_patch_wise_acc'])
+                    ssvli = loss_func_ssvli(ssvli_input_dict)
+                    ## if the loss is nan, then skip this iteration
+                    # if math.isnan(ssvli['loss']):
+                    #     continue
+                    ssvli_loss = ssvli_loss + lambda_2 * ssvli['loss']
+                    ssvli_acc_list.append(ssvli['clip_patch_wise_acc'])
+
+                FR_loss = lambda_3 * loss_func_feature_reconstruction(mapped_masked_embedded_patches, mapped_masked_pred_features)['loss']
 
                 ssvli_loss = ssvli_loss / ssvli_iter
                 ssvli_patch_wise_acc = sum(ssvli_acc_list) / len(ssvli_acc_list)
 
+
                 # apply label mask to loss and average
                 # loss = loss * labels_mask
-                loss = loss.mean() + ssvli_loss#/B
+                loss = loss.mean() +  ssvli_loss/B + FR_loss/B
             
 
-            loss_value = loss.item()
+            loss_value_total = loss.item()
+            loss_value_SSVLI = (ssvli_loss/B).item()
+            loss_value_FR = (FR_loss/B).item()
 
 
-            if not math.isfinite(loss_value):
-                print("Loss is {}, stopping training".format(loss_value))
+            if not math.isfinite(loss_value_total):
+                print("Loss is {}, stopping training".format(loss_value_total))
                 sys.exit(1)
 
             optimizer.zero_grad()
@@ -156,7 +198,9 @@ def train_one_epoch_ssvli(model: torch.nn.Module, data_loader: Iterable, optimiz
 
             torch.cuda.synchronize()
 
-            metric_logger.update(loss=loss_value)
+            metric_logger.update(loss_total=loss_value_total)
+            metric_logger.update(loss_SSVLI=loss_value_SSVLI)
+            metric_logger.update(loss_FR=loss_value_FR)
             metric_logger.update(patch_wise_acc=ssvli_patch_wise_acc)
             metric_logger.update(loss_scale=loss_scale_value)
             min_lr = 10.
@@ -181,7 +225,9 @@ def train_one_epoch_ssvli(model: torch.nn.Module, data_loader: Iterable, optimiz
             # wandb.log(wandb_dict, step=it)
 
             if log_writer is not None:
-                log_writer.update(loss=loss_value, head="loss")
+                log_writer.update(loss_total=loss_value_total, head="loss_total")
+                log_writer.update(loss_SSVLI=loss_value_SSVLI, head="loss_SSVLI")
+                log_writer.update(loss_FR=loss_value_FR, head="loss_FR")
                 log_writer.update(patch_wise_acc=ssvli_patch_wise_acc, head='patch_wise_acc')
                 log_writer.update(loss_scale=loss_scale_value, head="opt")
                 log_writer.update(lr=max_lr, head="opt")
@@ -210,7 +256,7 @@ def train_one_epoch_ssvli(model: torch.nn.Module, data_loader: Iterable, optimiz
                     if wd_schedule_values is not None and param_group["weight_decay"] > 0:
                         param_group["weight_decay"] = wd_schedule_values[it]
 
-            videos, video_texts, motion_patch_yabs, bboxs, bool_masked_pos = batch
+            videos, video_texts, motion_patch_yabs, bboxs, bool_masked_pos, target = batch
             videos = videos.to(device, non_blocking=True)
             bool_masked_pos = bool_masked_pos.to(device, non_blocking=True).flatten(1).to(torch.bool)
 
@@ -325,8 +371,10 @@ def train_one_epoch_ssvli(model: torch.nn.Module, data_loader: Iterable, optimiz
                     ssvli_loss = 0
                     ssvli_acc_list = []
                     for n in range (0, ssvli_iter):
+                        # video_embed = embedded_patches[accum_random_index_patch[j][n][:,0], accum_random_index_patch[j][n][:,1], :]
+                        video_embed = embedded_patches.mean(dim=1)
                         model_output = {
-                            "video_embed": embedded_patches[accum_random_index_patch[j][n][:,0], accum_random_index_patch[j][n][:,1], :],
+                            "video_embed": video_embed,
                             "text_embed": accum_texts[j],
                         }
 
@@ -394,7 +442,9 @@ def train_one_epoch_ssvli(model: torch.nn.Module, data_loader: Iterable, optimiz
             # wandb.log(wandb_dict, step=it)
 
             if log_writer is not None:
-                log_writer.update(loss=loss_value, head="loss")
+                log_writer.update(loss_total=loss_value_total, head="loss_total")
+                log_writer.update(loss_SSVLI=loss_value_SSVLI, head="loss_SSVLI")
+                log_writer.update(loss_FR=loss_value_FR, head="loss_FR")
                 log_writer.update(patch_wise_acc=ssvli_patch_wise_acc, head='patch_wise_acc')
                 log_writer.update(loss_scale=loss_scale_value, head="opt")
                 log_writer.update(lr=max_lr, head="opt")
@@ -412,7 +462,7 @@ def train_one_epoch_ssvli(model: torch.nn.Module, data_loader: Iterable, optimiz
 
             # Note: we clamp to 4.6052 = ln(100), as in the original paper.
             with torch.no_grad():
-                loss_func_ssvli.logit_scale.clamp_(0, math.log(100))
+                model.logit_scale.clamp_(0, math.log(100))
 
 
     # gather the stats from all processes

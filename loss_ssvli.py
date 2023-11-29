@@ -10,6 +10,8 @@ from loss_ssvli_utils import (get_rank,
                                 neighbour_exchange_bidir_with_grad,
                                 neighbour_exchange_with_grad)
 
+from utils import AllReduce
+
 
 class SSVLI_Loss(nn.Module):
     def __init__(
@@ -17,26 +19,33 @@ class SSVLI_Loss(nn.Module):
         stu_tau=0.1,
         tea_tau=0.04,
         loss_weight=0.5,
+        local_loss=True,
         ):
         super().__init__()
         self.labels = None
         self.last_local_batch_size = None
+        self.world_size = get_world_size()
+        self.local_loss = local_loss
         
         self.stu_tau = stu_tau
         self.tea_tau = tea_tau
         self.loss_weight = loss_weight
-        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
     def forward(self, outputs):
         video_embed = outputs['video_embed']
         text_embed = outputs['text_embed']
-        logit_scale = self.logit_scale.exp()
+        logit_scale = outputs['logit_scale']
         local_batch_size = video_embed.size(0)
 
         if local_batch_size != self.last_local_batch_size:
-            self.labels = local_batch_size * get_rank() + torch.arange(
-                local_batch_size, device=video_embed.device
-            )
+            if self.local_loss:
+                self.labels = torch.arange(
+                    local_batch_size, device=video_embed.device
+                )
+            else:
+                self.labels = torch.arange(
+                    self.world_size*local_batch_size, device=video_embed.device
+                )
             self.last_local_batch_size = local_batch_size
 
         # normalized features
@@ -48,9 +57,14 @@ class SSVLI_Loss(nn.Module):
             all_gather_batch([video_embed, text_embed])
 
         # cosine similarity as logits
-        logits_per_video = logit_scale * video_embed @ text_embed_all.t()
-        logits_per_text = logit_scale * text_embed @ video_embed_all.t()
+        if self.local_loss:
+            logits_per_video = logit_scale * video_embed @ text_embed_all.t()
+            logits_per_text = logit_scale * text_embed @ video_embed_all.t()
+        else:
+            logits_per_video = logit_scale * video_embed_all @ text_embed_all.t()
+            logits_per_text = logits_per_video.t()
 
+        # compute loss
         clip_loss_patch_wise = (F.cross_entropy(logits_per_video, self.labels) + \
             F.cross_entropy(logits_per_text, self.labels)) / 2
 
@@ -60,6 +74,7 @@ class SSVLI_Loss(nn.Module):
             correct = pred.eq(self.labels).sum()
             acc = 100 * correct / local_batch_size
    
+        # loss = AllReduce.apply(clip_loss_patch_wise)
         loss = clip_loss_patch_wise
 
         return {'loss': loss, 'clip_patch_wise_acc': acc}
@@ -180,3 +195,27 @@ class SSVLI_SigLipLoss(nn.Module):
             acc = 100 * correct / local_batch_size
 
         return {'loss': loss, 'clip_patch_wise_acc': acc}
+    
+
+
+
+class Feature_Reconstruction_Loss(nn.Module):
+    def __init__(
+        self
+        ):
+        super().__init__()
+        # self.loss = nn.CrossEntropyLoss()
+        # self.loss = nn.KLDivLoss()
+        # self.loss = nn.MSELoss()
+
+    def forward(self, input, target):
+        # input = input.softmax(dim=-1)
+        # target = target.softmax(dim=-1)
+        # input = F.log_softmax(input, dim=-1)
+        # target = F.softmax(target, dim=-1)
+        # loss = self.loss(input, target)
+
+        loss = F.smooth_l1_loss(input, target)
+        loss = AllReduce.apply(loss)
+
+        return {'loss': loss}

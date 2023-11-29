@@ -1,5 +1,7 @@
 import argparse
+import copy
 import datetime
+import functools
 import numpy as np
 import time
 import torch
@@ -22,7 +24,7 @@ import random
 
 def get_args():
     parser = argparse.ArgumentParser('VideoMAE pre-training script', add_help=False)
-    parser.add_argument('--batch_size', default=24, type=int)
+    parser.add_argument('--batch_size', default=20, type=int)
     parser.add_argument('--epochs', default=800 , type=int)
     parser.add_argument('--save_ckpt_freq', default=50, type=int)
 
@@ -66,17 +68,23 @@ def get_args():
         (Set the same value with args.weight_decay to keep weight decay no change)""")
     parser.add_argument('--accum_freq', type=int, default=1, help='gradient accumulation frequency (default: 1)')
 
-    parser.add_argument('--lr', type=float, default=1.5e-4, metavar='LR',
+    parser.add_argument('--lr', type=float, default=1.5e-3, metavar='LR', #1.5e-4
                         help='learning rate (default: 1.5e-4)')
     parser.add_argument('--warmup_lr', type=float, default=1e-6, metavar='LR',
                         help='warmup learning rate (default: 1e-6)')
     parser.add_argument('--min_lr', type=float, default=1e-5, metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0 (1e-5)')
 
-    parser.add_argument('--warmup_epochs', type=int, default=40, metavar='N',
+    parser.add_argument('--warmup_epochs', type=int, default=5, metavar='N', #40
                         help='epochs to warmup LR, if scheduler supports')
     parser.add_argument('--warmup_steps', type=int, default=-1, metavar='N',
                         help='epochs to warmup LR, if scheduler supports')
+    
+    # -- momentum schedule
+    parser.add_argument('--ema', type=float, nargs=2, default=[0.996, 1.0], metavar='M',
+                        help='EMA momentum schedule (default: 0.996 1.0)')
+    parser.add_argument('--ipe_scale', type=float, default=1.0, metavar='M',
+                        help='Inverse proportionality constant for EMA momentum schedule (default: 1.0)')
 
     # Augmentation parameters
     parser.add_argument('--color_jitter', type=float, default=0.0, metavar='PCT',
@@ -85,16 +93,16 @@ def get_args():
                         help='Training interpolation (random, bilinear, bicubic default: "bicubic")')
 
     # Dataset parameters
-    parser.add_argument('--data_path', default='/home/mona/SSVLI/dataset/epic_kitchens/annotation/noun/train.csv', type=str,
+    parser.add_argument('--data_path', default='/home/mona/SSVLI/dataset/epic_kitchens/annotation/action/train.csv', type=str,
                         help='dataset path')
     parser.add_argument('--imagenet_default_mean_and_std', default=True, action='store_true')
     parser.add_argument('--num_frames', type=int, default= 16)
     parser.add_argument('--sampling_rate', type=int, default= 2)
-    parser.add_argument('--output_dir', default='/home/mona/VideoMAE/results/pretrain_ssvli_epic_Kitchens_with_noun',
+    parser.add_argument('--output_dir', default='/home/mona/SSVLI/results/pretrain_ssvli_epic_Kitchens_with_action_lambda_1=0,lambda_2=1,lambda_3=0,ssvli_iter=10_800_epochs_batch20_singleGPU_accum=1',
                         help='path where to save, empty for no saving')
-    parser.add_argument('--log_dir', default='/home/mona/VideoMAE/results/pretrain_ssvli_epic_Kitchens_with_noun',
+    parser.add_argument('--log_dir', default='/home/mona/SSVLI/results/pretrain_ssvli_epic_Kitchens_with_action_lambda_1=0,lambda_2=1,lambda_3=0,ssvli_iter=10_800_epochs_batch20_singleGPU_accum=1',
                         help='path where to tensorboard log')
-    parser.add_argument('--device', default='cuda:1',
+    parser.add_argument('--device', default='cuda:0',
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
     parser.add_argument('--resume', default='', help='resume from checkpoint')
@@ -166,6 +174,7 @@ def main(args):
 
     # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
+    print(f"amir rank: {utils.get_rank()}")
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -198,17 +207,20 @@ def main(args):
     else:
         log_writer = None
 
+    collate_fn = functools.partial(utils.collate_fn_replace_repeated, dataset=dataset_train)
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train, sampler=sampler_train,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
         drop_last=True,
-        worker_init_fn=utils.seed_worker
+        worker_init_fn=utils.seed_worker,
+        collate_fn=collate_fn,
     )
 
     model.to(device)
     model_without_ddp = model
+    teacher_model = copy.deepcopy(model)
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
     print("Model = %s" % str(model_without_ddp))
@@ -218,7 +230,7 @@ def main(args):
 
     # in case of gradient accumulation, scale learning rate and weight decay
     if args.accum_freq > 1:
-        args.lr = args.lr / args.accum_freq
+        args.lr = (args.lr / args.accum_freq)
 
     args.lr = args.lr * total_batch_size / 256
     args.min_lr = args.min_lr * total_batch_size / 256
@@ -246,6 +258,11 @@ def main(args):
     wd_schedule_values = utils.cosine_scheduler(
         args.weight_decay, args.weight_decay_end, args.epochs, num_training_steps_per_epoch)
     print("Max WD = %.7f, Min WD = %.7f" % (max(wd_schedule_values), min(wd_schedule_values)))
+
+    # -- momentum schedule
+    ipe = len(data_loader_train)
+    momentum_scheduler = (args.ema[0] + i*(args.ema[1]-args.ema[0])/(ipe*args.epochs*args.ipe_scale)
+                          for i in range(int(ipe*args.epochs*args.ipe_scale)+1))
 
     utils.auto_load_model(
         args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
@@ -276,7 +293,14 @@ def main(args):
             patch_size=patch_size[0],
             normlize_target=args.normlize_target,
             accum_freq=args.accum_freq,
+            teacher_model=teacher_model,
         )
+
+        # momentum update of target encoder
+        with torch.no_grad():
+            m = next(momentum_scheduler)
+            for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):
+                param_k.data.mul_(m).add_((1.-m) * param_q.detach().data)
 
         # # wandb log
         # wandb_dict = {}

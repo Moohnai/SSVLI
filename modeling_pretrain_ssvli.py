@@ -1,11 +1,12 @@
 import math
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from functools import partial
 
-from modeling_finetune import Block, _cfg, PatchEmbed, get_sinusoid_encoding_table
+from modeling_finetune import Block, _cfg, PatchEmbed, get_sinusoid_encoding_table, Mlp
 from timm.models.registry import register_model
 from timm.models.layers import trunc_normal_ as __call_trunc_normal_
 
@@ -153,12 +154,14 @@ class PretrainVisionTransformerDecoder(nn.Module):
         for blk in self.blocks:
             x = blk(x)
 
+        pred_features = x
+
         if return_token_num > 0:
             x = self.head(self.norm(x[:, -return_token_num:])) # only return the mask tokens predict pixels
         else:
             x = self.head(self.norm(x))
 
-        return x
+        return x, pred_features
 
 class PretrainVisionTransformer(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
@@ -224,6 +227,10 @@ class PretrainVisionTransformer(nn.Module):
             norm_layer=norm_layer, 
             init_values=init_values,
             tubelet_size=tubelet_size)
+        
+        self.v2t_mapping = Mlp(in_features=encoder_embed_dim, hidden_features=int(encoder_embed_dim * mlp_ratio), 
+                            act_layer=nn.GELU, drop=0,
+                            out_features=int(encoder_embed_dim))
 
         self.encoder_to_decoder = nn.Linear(encoder_embed_dim, decoder_embed_dim, bias=False)
 
@@ -232,6 +239,9 @@ class PretrainVisionTransformer(nn.Module):
         self.pos_embed = get_sinusoid_encoding_table(self.encoder.patch_embed.num_patches, decoder_embed_dim)
 
         trunc_normal_(self.mask_token, std=.02)
+
+        # clip parameter
+        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
 
     def _init_weights(self, m):
@@ -251,8 +261,9 @@ class PretrainVisionTransformer(nn.Module):
         return {'pos_embed', 'cls_token', 'mask_token'}
 
     def forward(self, x, mask):
-        _, _, T, _, _ = x.shape
+        b, _, T, _, _ = x.shape
         x_vis, embedded_patch = self.encoder(x, mask) # [B, N_vis, C_e]
+        mapped_embedded_patch = self.v2t_mapping(embedded_patch) # [B, N_vis, C_e] # map the visual feature to the text feature space
         x_vis = self.encoder_to_decoder(x_vis) # [B, N_vis, C_d]
         B, N, C = x_vis.shape
         # we don't unshuffle the correct visible token order, 
@@ -261,9 +272,12 @@ class PretrainVisionTransformer(nn.Module):
         pos_emd_vis = expand_pos_embed[~mask].reshape(B, -1, C)
         pos_emd_mask = expand_pos_embed[mask].reshape(B, -1, C)
         x_full = torch.cat([x_vis + pos_emd_vis, self.mask_token + pos_emd_mask], dim=1) # [B, N, C_d]
-        x = self.decoder(x_full, pos_emd_mask.shape[1]) # [B, N_mask, 3 * 16 * 16]
+        x, pred_feature = self.decoder(x_full, pos_emd_mask.shape[1]) # [B, N_mask, 3 * 16 * 16]
 
-        return x, embedded_patch
+        mapped_masked_embedded_patch = mapped_embedded_patch[mask].reshape(b, -1, 768)
+        mapped_masked_pred_feature = self.v2t_mapping(pred_feature[mask].reshape(b, -1, 768))
+
+        return x, embedded_patch, mapped_embedded_patch, pred_feature, mapped_masked_embedded_patch, mapped_masked_pred_feature, self.logit_scale.exp()
 
 @register_model
 def pretrain_mae_small_patch16_224_ssvli(pretrained=False, **kwargs):
@@ -299,7 +313,7 @@ def pretrain_videomae_base_patch16_224_ssvli(pretrained=False, **kwargs):
         encoder_num_heads=12,
         encoder_num_classes=0,
         decoder_num_classes=1536,
-        decoder_embed_dim=384,
+        decoder_embed_dim=768,#384
         decoder_num_heads=6,
         mlp_ratio=4, 
         qkv_bias=True,

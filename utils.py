@@ -477,7 +477,17 @@ def auto_load_model(args, model, model_without_ddp, optimizer, loss_scaler, mode
                     args.resume, map_location='cpu', check_hash=True)
             else:
                 checkpoint = torch.load(args.resume, map_location='cpu')
-            model_without_ddp.load_state_dict(checkpoint['model'])
+
+            ######
+            # remove any weight with 'decoder', 'mask_token', and 'encoder_to_decoder prefix in the checkpoint
+            for key in list(checkpoint['model'].keys()):
+                if key.startswith('decoder') or key.startswith('encoder_to_decoder') or key.startswith('mask_token'):
+                    del checkpoint['model'][key] 
+            del checkpoint['optimizer']
+            ######
+            
+            # model_without_ddp.load_state_dict(checkpoint['model'])
+            model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
             print("Resume checkpoint %s" % args.resume)
             if 'optimizer' in checkpoint and 'epoch' in checkpoint:
                 optimizer.load_state_dict(checkpoint['optimizer'])
@@ -567,3 +577,55 @@ def multiple_samples_collate(batch, fold=False):
         return [inputs], labels, video_idx, extra_data
     else:
         return inputs, labels, video_idx, extra_data
+
+
+class AllReduce(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x):
+        if (
+            dist.is_available()
+            and dist.is_initialized()
+            and (dist.get_world_size() > 1)
+        ):
+            x = x.contiguous() / dist.get_world_size()
+            dist.all_reduce(x)
+        return x
+
+    @staticmethod
+    def backward(ctx, grads):
+        return grads
+    
+def collate_fn_replace_repeated(batch, dataset):
+    """Collate function that allows to replace repeated examples in the
+    dataloader. It expect that the dataloader returns 'None' when that occurs.
+    The 'None's in the batch are replaced with another examples sampled randomly.
+
+    Args:
+        batch (torch.Tensor): batch from the DataLoader.
+        dataset (torch.utils.data.Dataset): dataset which the DataLoader is loading.
+            Specify it with functools.partial and pass the resulting partial function that only
+            requires 'batch' argument to DataLoader's 'collate_fn' option.
+
+    Returns:
+        torch.Tensor: batch with new examples instead of corrupted ones.
+    """ 
+    # Idea from https://stackoverflow.com/a/57882783
+
+    original_batch_len = len(batch)
+    # Filter out all repeated examples
+    target = [x[-1] for x in batch]
+    _, unique_idx = np.unique(target, return_index=True)
+    batch = [batch[i] for i in unique_idx]
+
+
+    filtered_batch_len = len(batch)
+    # Num of corrupted examples
+    diff = original_batch_len - filtered_batch_len
+    if diff > 0:
+        # Replace corrupted examples with another examples randomly
+        batch.extend([dataset[random.randint(0, len(dataset)-1)] for _ in range(diff)])
+        # Recursive call to replace the replacements if they are corrupted
+        return collate_fn_replace_repeated(batch, dataset)
+    # Finally, when the whole batch is fine, return it
+    return torch.utils.data.dataloader.default_collate(batch)

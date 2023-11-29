@@ -172,7 +172,7 @@ for i in range (0,len(train_label)):
     #find the row index of the noun in the noun mapping label
     label_noun_name = invesrse_noun_mapping_label[label_noun_name]
     label_verb_name = invesrse_verb_mapping_label[label_verb_name]
-    action_list.append(f"{label_verb_name}"+" "+f"{label_noun_name}")
+    action_list.append(f"{label_verb_name}"+"_"+f"{label_noun_name}")
     
 
 val_label = pd.read_csv(root_add_val)
@@ -182,7 +182,7 @@ for i in range (0,len(val_label)):
     #find the row index of the noun in the noun mapping label
     label_noun_name = invesrse_noun_mapping_label[label_noun_name]
     label_verb_name = invesrse_verb_mapping_label[label_verb_name]
-    action_list.append(f"{label_verb_name}"+" "+f"{label_noun_name}")
+    action_list.append(f"{label_verb_name}"+"_"+f"{label_noun_name}")
 
 # action_list = list(set(action_list)) 
 
@@ -205,7 +205,7 @@ for i in range (0,len(train_label)):
 
     label_noun_name = invesrse_noun_mapping_label[label_noun_name]
     label_verb_name = invesrse_verb_mapping_label[label_verb_name]
-    action_cls_name = f"{label_verb_name}"+" "+f"{label_noun_name}"
+    action_cls_name = f"{label_verb_name}"+"_"+f"{label_noun_name}"
     action_cls_num = action_mapping[action_cls_name]
     path = os.path.join(video_mp4_root_add_train, f"video_{i}.mp4")
     train_df['path'].append(path)
@@ -218,7 +218,7 @@ for i in range (0,len(val_label)):
 
     label_noun_name = invesrse_noun_mapping_label[label_noun_name]
     label_verb_name = invesrse_verb_mapping_label[label_verb_name]
-    action_cls_name = f"{label_verb_name}"+" "+f"{label_noun_name}"
+    action_cls_name = f"{label_verb_name}"+"_"+f"{label_noun_name}"
     action_cls_num = action_mapping[action_cls_name]
     path = os.path.join(video_mp4_root_add_val, f"video_{i}.mp4")
     val_df['path'].append(path)

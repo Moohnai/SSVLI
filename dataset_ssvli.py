@@ -135,7 +135,7 @@ class VideoMAE_ssvli(torch.utils.data.Dataset):
         self.lazy_init = lazy_init
         self.patch_size = patch_size
         self.patch_yab_strategy = patch_yab_strategy
-        self.video_text = torch.load('/home/mona/SSVLI/dataset/epic_kitchens/EPIC_100_train_noun_text.pt')
+        self.video_text = torch.load('/home/mona/SSVLI/dataset/epic_kitchens/EPIC_100_train_action_text.pt')
         self.video_text = [x.float().to('cpu') for x in self.video_text]
         Total_video_BB_no_global_union={}
         print("Loading bbox json file...")
@@ -315,7 +315,7 @@ class VideoMAE_ssvli(torch.utils.data.Dataset):
             motion_patch_yab[x_start:x_end-1, y_start:y_end-1] = 1
 
 
-        return (process_data, video_text, motion_patch_yab.transpose(1, 0).flatten(), torch.LongTensor(process_bbx), mask)
+        return (process_data, video_text, motion_patch_yab.transpose(1, 0).flatten(), torch.LongTensor(process_bbx), mask, target)
  
     def __len__(self):
         return len(self.clips)
@@ -334,9 +334,46 @@ class VideoMAE_ssvli(torch.utils.data.Dataset):
                 clip_path = os.path.join(line_info[0])
                 target = int(line_info[-1].split('\n')[0])
                 # target = int(line_info[1])
+                # if target > 9:
+                #     continue
                 item = (clip_path, target)
                 clips.append(item)
-        return clips
+
+    
+        a=[x[1] for x in clips]
+        a_unique = list(set(a))
+        a_unique.sort()
+        counter = {x:0 for x in a_unique}
+        for x in a:
+            counter[x] += 1
+        # sort the dictionary based on the values
+        counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
+        #save in a text file
+        with open('/home/mona/test_whole.txt', 'w') as f:
+            for key, value in counter.items():
+                f.write('%s:%s\n' % (key, value))
+
+        # classes that have more than 30 and less than 1000 videos
+
+        b_unique = [x for x in a_unique if counter[x] > 100 and counter[x] < 300]
+        clips_middle = [x for x in clips if x[1] in b_unique]
+    
+
+        b=[x[1] for x in clips_middle]
+        b_unique = list(set(b)) 
+        b_unique.sort()
+        counter = {x[1]:0 for x in clips_middle}
+        for x in b:
+            counter[x] += 1
+        # sort the dictionary based on the values
+        counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
+        #save in a text file
+        with open('/home/mona/test_middle.txt', 'w') as f:
+            for key, value in counter.items():
+                f.write('%s:%s\n' % (key, value))
+        
+
+        return clips_middle #only 1000 videos are considered for training from the middle classes
 
     def _sample_train_indices(self, num_frames):
         # fix random seed for each video
