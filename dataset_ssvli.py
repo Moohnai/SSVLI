@@ -1,3 +1,4 @@
+from turtle import pd
 import torch
 import torch.utils.data as data
 import torchvision.transforms as transforms
@@ -11,7 +12,93 @@ import orjson
 from PIL import Image
 from masking_generator import TubeMaskingGenerator, TubeMaskingGenerator_BB
 import math
+import torchvision.transforms._transforms_video as transforms_video
+import pandas as pd
+from decord import VideoReader, cpu
+import csv
+import torch.nn as nn
+import os.path as osp
 
+def get_frame_ids(start_frame, end_frame, num_segments=32, jitter=True):
+    frame_ids = np.convolve(np.linspace(start_frame, end_frame, num_segments + 1), [0.5, 0.5], mode='valid')
+    if jitter:
+        seg_size = float(end_frame - start_frame - 1) / num_segments
+        shift = (np.random.rand(num_segments) - 0.5) * seg_size
+        frame_ids += shift
+    return frame_ids.astype(int).tolist()
+
+def get_video_reader(videoname, num_threads, fast_rrc, rrc_params, fast_rcc, rcc_params):
+    video_reader = None
+    if fast_rrc:
+        video_reader = decord.VideoReader(
+            videoname,
+            num_threads=num_threads,
+            width=rrc_params[0], height=rrc_params[0],
+            use_rrc=True, scale_min=rrc_params[1][0], scale_max=rrc_params[1][1],
+        )
+    elif fast_rcc:
+        video_reader = decord.VideoReader(
+            videoname,
+            num_threads=num_threads,
+            width=rcc_params[0], height=rcc_params[0],
+            use_rcc=True,
+        )
+    else:
+        video_reader = decord.VideoReader(videoname, num_threads=num_threads)
+    return video_reader
+
+def video_loader(root, vid, ext, second, end_second,
+                 chunk_len=300, fps=30, clip_length=32,
+                 threads=1,
+                 fast_rrc=False, rrc_params=(224, (0.5, 1.0)),
+                 fast_rcc=False, rcc_params=(224, ),
+                 jitter=False):
+    assert fps > 0, 'fps should be greater than 0'
+
+    vr = get_video_reader(
+        osp.join(root, '{}'.format(vid)),
+        num_threads=threads,
+        fast_rrc=fast_rrc, rrc_params=rrc_params,
+        fast_rcc=fast_rcc, rcc_params=rcc_params,
+    )
+    end_second = min(end_second, len(vr) / fps)
+
+    # calculate frame_ids
+    frame_offset = int(np.round(second * fps))
+    total_duration = max(int((end_second - second) * fps), clip_length)
+    frame_ids = get_frame_ids(frame_offset, min(frame_offset + total_duration, len(vr)), num_segments=clip_length, jitter=jitter)
+
+    # load frames
+    assert max(frame_ids) < len(vr)
+    try:
+        frames = vr.get_batch(frame_ids).asnumpy()
+    except decord.DECORDError as error:
+        print(error)
+        frames = vr.get_batch([0] * len(frame_ids)).asnumpy()
+
+    return torch.from_numpy(frames.astype(np.float32)), frame_ids
+
+def datetime2sec(str):
+    hh, mm, ss = str.split(':')
+    return int(hh) * 3600 + int(mm) * 60 + float(ss)
+
+class Permute(nn.Module):
+    """
+    Permutation as an op
+    """
+
+    def __init__(self, ordering):
+        super().__init__()
+        self.ordering = ordering
+
+    def forward(self, frames):
+        """
+        Args:
+            frames in some ordering, by default (C, T, H, W)
+        Returns:
+            frames in the ordering that was specified
+        """
+        return frames.permute(self.ordering)
 
 class DataAugmentationForVideoMAE_BB(object):
     def __init__(self, args):
@@ -135,7 +222,10 @@ class VideoMAE_ssvli(torch.utils.data.Dataset):
         self.lazy_init = lazy_init
         self.patch_size = patch_size
         self.patch_yab_strategy = patch_yab_strategy
-        self.video_text = torch.load('/home/mona/SSVLI/dataset/epic_kitchens/EPIC_100_train_action_text.pt')
+        # self.video_text = torch.load('/home/mona/SSVLI/dataset/epic_kitchens/EPIC_100_train_action_text.pt')
+        # self.video_text = torch.load("/home/mona/SSVLI/dataset/epic_kitchens/EPIC_100_train_video_captions.pt")
+        # self.video_text = torch.load("/home/mona/SSVLI/dataset/epic_kitchens/EPIC_100_train_image_captions.pt")
+        self.video_text = torch.load("/home/mona/SSVLI/dataset/epic_kitchens/EPIC_100_train_mixed_captions.pt")
         self.video_text = [x.float().to('cpu') for x in self.video_text]
         Total_video_BB_no_global_union={}
         print("Loading bbox json file...")
@@ -353,9 +443,9 @@ class VideoMAE_ssvli(torch.utils.data.Dataset):
             for key, value in counter.items():
                 f.write('%s:%s\n' % (key, value))
 
-        # classes that have more than 30 and less than 1000 videos
+        # classes that have more than 90 and less than 110 videos
 
-        b_unique = [x for x in a_unique if counter[x] > 100 and counter[x] < 300]
+        b_unique = [x for x in a_unique if counter[x] > 90 and counter[x] < 110] #3510data_35classes
         clips_middle = [x for x in clips if x[1] in b_unique]
     
 
@@ -420,6 +510,215 @@ class VideoMAE_ssvli(torch.utils.data.Dataset):
             raise RuntimeError('Error occured in reading frames {} from video {} of duration {}.'.format(frame_id_list, directory, duration))
         return sampled_list, frame_id_list
 
+class VideoCaptionDatasetBase(torch.utils.data.Dataset):
+    def __init__(self, dataset, data_root, anno_path, mode, metadata=None, is_trimmed=True, args=None):
+        self.dataset = dataset
+        self.data_root = data_root
+        self.metadata = metadata
+        self.is_trimmed = is_trimmed
+        self.mode = mode
+        self.anno_path = anno_path
+
+        m = "validation" if mode == "test" else mode
+        self.data_root = os.path.join(self.data_root, m)
+        
+        self.samples = []
+        with open(self.anno_path) as f:
+            csv_reader = csv.reader(f)
+            _ = next(csv_reader)  # skip the header
+            for i, row in enumerate(csv_reader):
+                pid, vid = row[1:3]
+                narration = row[8]
+                start_timestamp, end_timestamp = datetime2sec(row[4]), datetime2sec(row[5])
+                verb, noun = int(row[10]), int(row[12])
+                vid_path = 'video_{}.mp4'.format(i)
+
+                if mode != "train":
+                    # check if (verb, noun) is in the mapping
+                    if f"{verb}:{noun}" not in args.mapping_vn2act:
+                        continue
+                
+                if len(row) == 16:
+                    fps = float(row[-1])
+                else:
+                    vid_path = os.path.join(self.data_root, vid_path)
+                    vr = VideoReader(vid_path, num_threads=1, ctx=cpu(0))
+                    fps = vr.get_avg_fps()
+                # start_frame = int(np.round(fps * start_timestamp))
+                # end_frame = int(np.ceil(fps * end_timestamp))
+                self.samples.append((os.path.join(self.data_root, vid_path), start_timestamp, end_timestamp, fps, narration, verb, noun))
+
+
+        if mode == "train":
+            # count the number of each class
+            num_each_class = {}
+            for _, _, _, _, _, verb, noun in self.samples:
+                if args.mapping_vn2act[f"{verb}:{noun}"] in num_each_class:
+                    num_each_class[args.mapping_vn2act[f"{verb}:{noun}"]] += 1
+                else:
+                    num_each_class[args.mapping_vn2act[f"{verb}:{noun}"]] = 1
+
+            selected_classes = [x for x, v in num_each_class.items() if v > 90 and v < 110] #3510data_35classes
+
+            # fileter the samples based on the selected classes
+            self.samples = [x for x in self.samples if args.mapping_vn2act[f"{x[5]}:{x[6]}"] in selected_classes]
+
+            # update the mapping
+            vn_list = [f"{x[5]}:{x[6]}" for x in self.samples]
+            args.mapping_vn2act = {x: i for i, x in enumerate(set(vn_list))}
+            args.mapping_act2v = {i: int(vn.split(':')[0]) for (vn, i) in args.mapping_vn2act.items()}
+            args.mapping_act2n = {i: int(vn.split(':')[1]) for (vn, i) in args.mapping_vn2act.items()}
+            args.actions = pd.DataFrame.from_dict({'verb': args.mapping_act2v.values(), 'noun': args.mapping_act2n.values()})
+
+            ########################################
+            mapping_class_t=[]
+            #count the number of samples for each class in the selected training set
+            for i in range(len(args.actions)):
+                mapping_class_t.append(len([x for x in self.samples if args.mapping_vn2act[f"{x[5]}:{x[6]}"] == i]))
+            # print("number of samples for each class in the selected training set: ", mapping_class_t)
+            #number of samples for each class in the selected training set: 
+            #[107, 98, 101, 97, 97, 97, 104,
+            #  99, 94, 104, 100, 98, 104, 94,
+            #  109, 92, 108, 94, 106, 104, 96,
+            #  92, 106, 95, 105, 108, 95, 105,
+            #  103, 95, 101, 94, 99, 100, 109]             
+
+    #########count the number of samples for each class in the selected validation set
+        if mode != "train":
+            mapping_class_v=[]
+            for _, _, _, _, _, verb, noun in self.samples:
+                if f"{verb}:{noun}" in args.mapping_vn2act:
+                    for i in range(len(args.actions)):
+                        mapping_class_v.append(len([x for x in self.samples if args.mapping_vn2act[f"{x[5]}:{x[6]}"] == i]))
+                    # print("number of samples for each class in the selected validation set: ", mapping_class_v)
+                    # number of samples for each class in the selected validation set: 
+                    #[8, 12, 7, 12, 4, 10, 13,
+                    #  30, 27, 14, 18, 21, 53, 6,
+                    #  21, 20, 7, 16, 20, 10, 1,
+                    #  24, 31, 13, 6, 11, 4, 14,
+                    #  2, 9, 30, 2, 17, 4, 9]
+
+                    #506
+        ########################################
+        # add fps to the annotation file
+        if len(row) == 15:
+            df = pd.read_csv(self.anno_path)
+            df['fps'] = [self.samples[i][3] for i in range(len(self.samples))]
+            df.to_csv(self.anno_path, index=False)
+
+    def get_raw_item(
+        self, i, is_training=True, num_clips=1,
+        chunk_len=300, clip_length=32, clip_stride=2,
+        sparse_sample=False,
+        narration_selection='random',
+        threads=1,
+        fast_rrc=False, rrc_params=(224, (0.5, 1.0)),
+        fast_rcc=False, rcc_params=(224,),
+    ):
+
+        vid_path, start_second, end_second, fps, narration, verb, noun = self.samples[i]
+        end_second = end_second - start_second
+        start_second = 0
+        frames, frame_ids = video_loader(self.data_root, vid_path, 'MP4',
+                                start_second, end_second,
+                                chunk_len=chunk_len, fps=fps,
+                                clip_length=clip_length,
+                                threads=threads,
+                                fast_rrc=fast_rrc,
+                                rrc_params=rrc_params,
+                                fast_rcc=fast_rcc,
+                                rcc_params=rcc_params,
+                                jitter=is_training)
+        return frames, '{}:{}'.format(verb, noun), frame_ids
+
+    def __len__(self):
+        return len(self.samples)
+
+class VideoClassyDataset(VideoCaptionDatasetBase):
+    def __init__(
+        self, dataset, anno_path, metadata=None, transform=None,
+        is_training=True,
+        num_clips=1,
+        chunk_len=-1,
+        clip_length=32, clip_stride=2,
+        threads=1,
+        fast_rrc=False,
+        rrc_params=(224, (0.5, 1.0)),
+        fast_rcc=False,
+        rcc_params=(224,),
+        sparse_sample=False,
+        is_trimmed=True,
+        mode='train',
+        args=None,
+        root="/mnt/welles/scratch/datasets/Epic-kitchen/EPIC-KITCHENS/EPIC_100_action_recognition/mp4_videos/",
+        ):
+        super().__init__(dataset, root, anno_path, mode, metadata, is_trimmed=is_trimmed, args=args)
+
+        self.transform = transform
+        self.is_training = True if mode == 'train' else False
+        self.num_clips = num_clips
+        self.chunk_len = chunk_len
+        self.clip_length = clip_length
+        self.clip_stride = clip_stride
+        self.threads = threads
+        self.fast_rrc = fast_rrc
+        self.rrc_params = rrc_params
+        self.fast_rcc = fast_rcc
+        self.rcc_params = rcc_params
+        self.sparse_sample = sparse_sample
+        self.mode = mode
+        self.label_mapping = args.mapping_vn2act
+
+        mean, std = [0.485 * 255, 0.456 * 255, 0.406 * 255], [0.229 * 255, 0.224 * 255, 0.225 * 255]
+
+        if self.mode == "train":
+            base_train_transform_ls = [
+                Permute([3, 0, 1, 2]),
+                torchvision.transforms.RandomResizedCrop(rcc_params[0], scale=(0.5, 1.0)),
+                transforms_video.NormalizeVideo(mean=mean, std=std),
+            ]
+            self.transform = torchvision.transforms.Compose(base_train_transform_ls)
+        else:
+            base_val_transform_ls = [
+                Permute([3, 0, 1, 2]),
+                torchvision.transforms.Resize(rcc_params[0]),
+                torchvision.transforms.CenterCrop(rcc_params[0]),
+                transforms_video.NormalizeVideo(mean=mean, std=std),
+            ]
+            self.transform = torchvision.transforms.Compose(base_val_transform_ls)
+
+    def __getitem__(self, i):
+        frames, label, _ = self.get_raw_item(
+            i, is_training=self.is_training,
+            chunk_len=self.chunk_len,
+            num_clips=self.num_clips,
+            clip_length=self.clip_length,
+            clip_stride=self.clip_stride,
+            threads=self.threads,
+            fast_rrc=self.fast_rrc,
+            rrc_params=self.rrc_params,
+            fast_rcc=self.fast_rcc,
+            rcc_params=self.rcc_params,
+            sparse_sample=self.sparse_sample,
+        )
+
+        # apply transformation
+        if self.transform is not None:
+            frames = self.transform(frames)
+
+        if self.label_mapping is not None:
+            if isinstance(label, list):
+                # multi-label case
+                res_array = np.zeros(len(self.label_mapping))
+                for lbl in label:
+                    res_array[self.label_mapping[lbl]] = 1.
+                label = res_array
+            else:
+                
+                label = self.label_mapping[label]
+
+        return frames, label, self.samples[i][0].split("/")[-1].split(".")[0], {}
+
 def build_pretraining_dataset_ssvli(args, patch_size=16):
     transform = DataAugmentationForVideoMAE_BB(args)
     dataset = VideoMAE_ssvli(
@@ -440,5 +739,40 @@ def build_pretraining_dataset_ssvli(args, patch_size=16):
     print("Data Aug = %s" % str(transform))
     return dataset
 
+def build_finetuning_dataset_ssvli(is_train, test_mode, args):
+    if args.data_set == 'Epic-Kitchens':
+        mode = None
+        anno_path = None
+        if is_train is True:
+            mode = 'train'
+            anno_path = os.path.join(args.data_path, 'EPIC_100_train.csv')
+            num_clips = args.num_segments
+            # anno_path = args.data_path
+        elif test_mode is True:
+            mode = 'test'
+            anno_path = os.path.join(args.data_path, 'EPIC_100_validation.csv') 
+            num_clips = args.test_num_segment
+            
+        else:  
+            mode = 'validation'
+            anno_path = os.path.join(args.data_path, 'EPIC_100_validation.csv')
+            # anno_path = args.eval_data_path 
+            num_clips = args.test_num_segment
 
 
+        dataset = VideoClassyDataset(
+            args.data_set, 
+            anno_path=anno_path,
+            num_clips=num_clips,
+            clip_length=args.num_frames, 
+            clip_stride=args.sampling_rate,
+            threads=1,
+            mode=mode,
+            args=args,
+            )
+        
+        nb_classes = args.nb_classes   
+    assert nb_classes == args.nb_classes
+    print("Number of the class = %d" % args.nb_classes)
+
+    return dataset, nb_classes

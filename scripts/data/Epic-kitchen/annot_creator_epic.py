@@ -163,7 +163,7 @@ for k, v in verb_mapping_label['key'].items():
     for item in eval(verb_mapping_label['instances'].values[k]):
         invesrse_verb_mapping_label[item.strip()] = v.strip()
 
-
+    
 action_list = []
 train_label = pd.read_csv(root_add_train)
 for i in range (0,len(train_label)):
@@ -192,7 +192,7 @@ for item in action_list:
         unique_action_list.append(item) 
 
 print(len(unique_action_list))
-action_mapping = {action_list[i]:i for i in range(len(action_list))}
+action_mapping = {unique_action_list[i]:i for i in range(len(unique_action_list))}
 
 ###
 train_df = {'path':[], 'label_name':[], 'label_num':[]}

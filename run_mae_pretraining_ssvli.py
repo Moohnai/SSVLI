@@ -98,21 +98,22 @@ def get_args():
     parser.add_argument('--imagenet_default_mean_and_std', default=True, action='store_true')
     parser.add_argument('--num_frames', type=int, default= 16)
     parser.add_argument('--sampling_rate', type=int, default= 2)
-    parser.add_argument('--output_dir', default='/home/mona/SSVLI/results/pretrain_ssvli_epic_Kitchens_with_action_lambda_1=0,lambda_2=1,lambda_3=0,ssvli_iter=10_800_epochs_batch20_singleGPU_accum=1',
+    parser.add_argument('--output_dir', default='/home/mona/SSVLI/results/pretrain_ssvli_epic_Kitchens_with_action_annot_lambda_1=0,lambda_2=1,lambda_3=160,ssvli_iter=10_800_epochs_batch20_singleGPU_accum=1',
                         help='path where to save, empty for no saving')
-    parser.add_argument('--log_dir', default='/home/mona/SSVLI/results/pretrain_ssvli_epic_Kitchens_with_action_lambda_1=0,lambda_2=1,lambda_3=0,ssvli_iter=10_800_epochs_batch20_singleGPU_accum=1',
+    parser.add_argument('--log_dir', default='/home/mona/SSVLI/results/pretrain_ssvli_epic_Kitchens_with_action_annot_lambda_1=0,lambda_2=1,lambda_3=160,ssvli_iter=10_800_epochs_batch20_singleGPU_accum=1',
                         help='path where to tensorboard log')
-    parser.add_argument('--device', default='cuda:0',
+    parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
     parser.add_argument('--resume', default='', help='resume from checkpoint')
+    # parser.add_argument('--resume', default='/home/mona/SSVLI/results/pretrain_ssvli_epic_Kitchens_with_action_lambda_1=1,lambda_2=0,lambda_3=0,ssvli_iter=10_800_epochs_batch20_singleGPU_accum=1/checkpoint-799.pth', help='resume from checkpoint')
     parser.add_argument('--auto_resume', action='store_true')
     parser.add_argument('--no_auto_resume', action='store_false', dest='auto_resume')
     parser.set_defaults(auto_resume=True)
 
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
-    parser.add_argument('--num_workers', default=8, type=int)
+    parser.add_argument('--num_workers', default=8, type=int) #8
     parser.add_argument('--pin_mem', action='store_true',
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
     parser.add_argument('--no_pin_mem', action='store_false', dest='pin_mem',
@@ -136,6 +137,7 @@ def get_args():
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
     parser.add_argument('--local_rank', default=-1, type=int)
+    parser.add_argument('--local-rank', default=0, type=int)
     parser.add_argument('--dist_on_itp', action='store_true')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
 
@@ -174,7 +176,6 @@ def main(args):
 
     # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
-    print(f"amir rank: {utils.get_rank()}")
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -269,13 +270,13 @@ def main(args):
     torch.cuda.empty_cache()
     print(f"Start training for {args.epochs} epochs")
 
-    # # initialize wandb
-    # wandb.init(
-    #     project="epic-Kitchens",
-    #     group="pretrained",
-    #     name="800_epochs_SSVLI_scratch_with_noun",
-    #     config=args,
-    #     )
+    # initialize wandb
+    wandb.init(
+        project="ssvli_epic",
+        group="pretrained",
+        name="FR-CLIP(160-1)",
+        config=args,
+        )
 
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
@@ -302,11 +303,11 @@ def main(args):
             for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):
                 param_k.data.mul_(m).add_((1.-m) * param_q.detach().data)
 
-        # # wandb log
-        # wandb_dict = {}
-        # for key, value in train_stats.items():
-        #     wandb_dict["train_epoch_"+key] = value
-        # wandb.log(wandb_dict, step=epoch)
+        # wandb log
+        wandb_dict = {}
+        for key, value in train_stats.items():
+            wandb_dict["train_epoch_"+key] = value
+        wandb.log(wandb_dict, step=epoch)
 
         if args.output_dir:
             if (epoch + 1) % args.save_ckpt_freq == 0 or epoch + 1 == args.epochs:
