@@ -430,40 +430,41 @@ class VideoMAE_ssvli(torch.utils.data.Dataset):
                 clips.append(item)
 
     
-        a=[x[1] for x in clips]
-        a_unique = list(set(a))
-        a_unique.sort()
-        counter = {x:0 for x in a_unique}
-        for x in a:
-            counter[x] += 1
-        # sort the dictionary based on the values
-        counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
-        #save in a text file
-        with open('/home/mona/test_whole.txt', 'w') as f:
-            for key, value in counter.items():
-                f.write('%s:%s\n' % (key, value))
+        # a=[x[1] for x in clips]
+        # a_unique = list(set(a))
+        # a_unique.sort()
+        # counter = {x:0 for x in a_unique}
+        # for x in a:
+        #     counter[x] += 1
+        # # sort the dictionary based on the values
+        # counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
+        # #save in a text file
+        # with open('/home/mona/test_whole.txt', 'w') as f:
+        #     for key, value in counter.items():
+        #         f.write('%s:%s\n' % (key, value))
 
-        # classes that have more than 90 and less than 110 videos
+        # ############### classes that have more than 90 and less than 110 videos
 
-        b_unique = [x for x in a_unique if counter[x] > 90 and counter[x] < 110] #3510data_35classes
-        clips_middle = [x for x in clips if x[1] in b_unique]
+        # b_unique = [x for x in a_unique if counter[x] > 90 and counter[x] < 110] #3510data_35classes
+        # clips_middle = [x for x in clips if x[1] in b_unique]
     
 
-        b=[x[1] for x in clips_middle]
-        b_unique = list(set(b)) 
-        b_unique.sort()
-        counter = {x[1]:0 for x in clips_middle}
-        for x in b:
-            counter[x] += 1
-        # sort the dictionary based on the values
-        counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
-        #save in a text file
-        with open('/home/mona/test_middle.txt', 'w') as f:
-            for key, value in counter.items():
-                f.write('%s:%s\n' % (key, value))
+        # b=[x[1] for x in clips_middle]
+        # b_unique = list(set(b)) 
+        # b_unique.sort()
+        # counter = {x[1]:0 for x in clips_middle}
+        # for x in b:
+        #     counter[x] += 1
+        # # sort the dictionary based on the values
+        # counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
+        # #save in a text file
+        # with open('/home/mona/test_middle.txt', 'w') as f:
+        #     for key, value in counter.items():
+        #         f.write('%s:%s\n' % (key, value))
         
 
-        return clips_middle #only 1000 videos are considered for training from the middle classes
+        # return clips_middle #only 1000 videos are considered for training from the middle classes
+        return clips
 
     def _sample_train_indices(self, num_frames):
         # fix random seed for each video

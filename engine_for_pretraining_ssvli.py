@@ -19,7 +19,7 @@ from loss_ssvli import SSVLI_Loss, SSVLI_SigLipLoss, Feature_Reconstruction_Loss
 def train_one_epoch_ssvli(model: torch.nn.Module, data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0, patch_size: int = 16, 
                     normlize_target: bool = True, log_writer=None, lr_scheduler=None, start_steps=None,
-                    lr_schedule_values=None, wd_schedule_values=None, loss_weight= None, lambda_1=0, lambda_2=1, lambda_3=160, ssvli_iter=10,
+                    lr_schedule_values=None, wd_schedule_values=None, loss_weight= None, lambda_1=0, lambda_2=0, lambda_3=1, ssvli_iter=10,
                     accum_freq=1, teacher_model=None):
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -503,7 +503,7 @@ def train_one_epoch_predictive(model: torch.nn.Module, data_loader: Iterable, op
         videos, video_texts, motion_patch_yabs, bboxs, bool_masked_pos, target = batch
         videos = videos.to(device, non_blocking=True)
         bool_masked_pos = bool_masked_pos.to(device, non_blocking=True).flatten(1).to(torch.bool)
-        bool_masked_pos[:,0:196*2] = False 
+        bool_masked_pos[:,0:196*2] = False #0:196*2 means the first 4 frames from 16 frames are unmasked
  
         with torch.no_grad():
             # calculate the predict label

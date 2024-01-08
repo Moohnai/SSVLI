@@ -98,9 +98,9 @@ def get_args():
     parser.add_argument('--imagenet_default_mean_and_std', default=True, action='store_true')
     parser.add_argument('--num_frames', type=int, default= 16)
     parser.add_argument('--sampling_rate', type=int, default= 2)
-    parser.add_argument('--output_dir', default='/home/mona/SSVLI/results/pretrain_ssvli_epic_Kitchens_with_action_annot_lambda_1=0,lambda_2=1,lambda_3=160,ssvli_iter=10_800_epochs_batch20_singleGPU_accum=1',
+    parser.add_argument('--output_dir', default='/home/mona/SSVLI/results/pretrain_ssvli_FULL_epic_Kitchens_with_action_annot_lambda_1=0,lambda_2=0,lambda_3=1,ssvli_iter=10_800_epochs_batch20_accum=1',
                         help='path where to save, empty for no saving')
-    parser.add_argument('--log_dir', default='/home/mona/SSVLI/results/pretrain_ssvli_epic_Kitchens_with_action_annot_lambda_1=0,lambda_2=1,lambda_3=160,ssvli_iter=10_800_epochs_batch20_singleGPU_accum=1',
+    parser.add_argument('--log_dir', default='/home/mona/SSVLI/results/pretrain_ssvli_FULL_epic_Kitchens_with_action_annot_lambda_1=0,lambda_2=0,lambda_3=1,ssvli_iter=10_800_epochs_batch20_accum=1',
                         help='path where to tensorboard log')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
@@ -274,7 +274,7 @@ def main(args):
     wandb.init(
         project="ssvli_epic",
         group="pretrained",
-        name="FR-CLIP(160-1)",
+        name="pretrain_ssvli_FULL_epic_Kitchens_with_action_annot_lambda_1=0,lambda_2=0,lambda_3=1,ssvli_iter=10_800_epochs_batch20_accum=1",
         config=args,
         )
 
