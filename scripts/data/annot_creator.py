@@ -8,8 +8,8 @@ val_df = {'path':[], 'label_name':[], 'label_num':[]}
 test_df = {'path':[], 'label_name':[], 'label_num':[]}
 
 # root addresses
-root_add = "path to dataset root"
-video_mp4_root_add = "path to dataset videos"
+root_add = "../../mnt/welles/scratch/datasets/SSV2/"            #path to dataset root
+video_mp4_root_add = "../../mnt/welles/scratch/datasets/SSV2/mp4_videos"       #path to dataset videos
 
 f = open(os.path.join(root_add, 'labels','labels.json'))
 labels = json.load(f)
@@ -84,23 +84,23 @@ val_df = pd.DataFrame(val_df)
 test_df = pd.DataFrame(test_df)
 
 # to_csv() 
-csv_annotation_root = "path to save csv file"
+csv_annotation_root = "/home/mona/SSVLI/dataset/ssv2/annotation"
 if not os.path.exists(csv_annotation_root):
     os.makedirs(csv_annotation_root)
 train_df.to_csv(path_or_buf=os.path.join(csv_annotation_root, "train.csv"), sep=' ', na_rep='', float_format=None, 
 columns=None, header=False, index=False, index_label=None, mode='w', encoding=None, 
-compression='infer', quoting=None, quotechar='"', line_terminator=None, 
+compression='infer', quoting=None, quotechar='"', 
 chunksize=None, date_format=None, doublequote=True, escapechar=None, 
 decimal='.', errors='strict', storage_options=None)
 
 val_df.to_csv(path_or_buf=os.path.join(csv_annotation_root, "val.csv"), sep=' ', na_rep='', float_format=None, 
 columns=None, header=False, index=False, index_label=None, mode='w', encoding=None, 
-compression='infer', quoting=None, quotechar='"', line_terminator=None, 
+compression='infer', quoting=None, quotechar='"', 
 chunksize=None, date_format=None, doublequote=True, escapechar=None, 
 decimal='.', errors='strict', storage_options=None)
 
 test_df.to_csv(path_or_buf=os.path.join(csv_annotation_root, "test.csv"), sep=' ', na_rep='', float_format=None,
 columns=None, header=False, index=False, index_label=None, mode='w', encoding=None,
-compression='infer', quoting=None, quotechar='"', line_terminator=None,
+compression='infer', quoting=None, quotechar='"',
 chunksize=None, date_format=None, doublequote=True, escapechar=None,
 decimal='.', errors='strict', storage_options=None)

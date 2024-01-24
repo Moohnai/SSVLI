@@ -5,10 +5,14 @@ pip3 install torch torchvision torchaudio --index-url https://download.pytorch.o
 DS_BUILD_OPS=1 pip install deepspeed
 pip install timm==0.4.12
 conda install -c conda-forge tensorboardx
-pip install decord
 conda install -c conda-forge einops
 pip install opencv-python
 pip install scipy
 pip install pandas
 conda install -c conda-forge mpi4py
 pip install -U albumentations
+pip install orjson
+pip install wandb
+pip install matplotlib
+pip install decord
+pip install flash-attn

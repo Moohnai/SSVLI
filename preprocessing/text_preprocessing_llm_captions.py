@@ -21,7 +21,7 @@ if __name__ == "__main__":
     model, _ = clip.load("ViT-L/14", device=device)
 
     # read csv file
-    csv_captions_path = "../../home/mona/SSVLI/preprocessing/epic_captions_train.csv"
+    csv_captions_path = "../../home/mona/SSVLI/preprocessing/ssv2_captions_train.csv"
     
     df_train = pd.read_csv(csv_captions_path)
     # get the basename of the path
@@ -47,7 +47,7 @@ if __name__ == "__main__":
     # encode the "mixed_captions" column
     encoded_mixed_captions_train = [caption_encoding(text[:max_caption_length]) for text in tqdm(df_train["mixed_caption"], total=len(df_train), desc="Encoding mixed captions")]
 
-    torch.save(encoded_video_captions_train, "../../home/mona/SSVLI/dataset/epic_kitchens/EPIC_100_train_video_captions.pt")
-    torch.save(encoded_image_captions_train, "../../home/mona/SSVLI/dataset/epic_kitchens/EPIC_100_train_image_captions.pt")
-    torch.save(encoded_mixed_captions_train, "../../home/mona/SSVLI/dataset/epic_kitchens/EPIC_100_train_mixed_captions.pt")
+    torch.save(encoded_video_captions_train, "../../home/mona/SSVLI/dataset/ssv2/SSV2_train_video_captions.pt")
+    torch.save(encoded_image_captions_train, "../../home/mona/SSVLI/dataset/ssv2/SSV2_train_image_captions.pt")
+    torch.save(encoded_mixed_captions_train, "../../home/mona/SSVLI/dataset/ssv2/SSV2_train_mixed_captions.pt")
 

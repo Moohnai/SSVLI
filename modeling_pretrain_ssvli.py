@@ -259,7 +259,7 @@ class PretrainVisionTransformer(nn.Module):
     @torch.jit.ignore
     def no_weight_decay(self):
         return {'pos_embed', 'cls_token', 'mask_token'}
-
+ 
     def forward(self, x, mask):
         b, _, T, _, _ = x.shape
         x_vis, embedded_patch = self.encoder(x, mask) # [B, N_vis, C_e]
